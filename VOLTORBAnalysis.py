@@ -1,49 +1,126 @@
+from random import randint
+import curses
+
 # ==================== Board =================== #
 class Board:
-    def __init__(self):
+    def __init__(self,row_data,col_data,screen=None):
         self.size = 5
+        self.row_data = row_data
+        self.col_data = col_data
         self.tiles = []
-        for i in range(self.size):
+        for r in range(self.size):
             self.tiles.append([])
-            for _ in range(self.size):
-                self.tiles[i].append(Tile([0,1,2,3]))
+            for c in range(self.size):
+                self.tiles[r].append(Tile(self,[0,1,2,3],r,c))
+        self.screen = screen
+        self.h = 5
+        self.w = 10
 
-    def update(self,dim,pos,val):
-        if dim == 'row':
-            for i in range(self.size):
-                self.tiles[pos][i].intersect(val)
-        elif dim == 'col':
-            for i in range(self.size):
-                self.tiles[i][pos].intersect(val)
-        elif dim == 'cel':
-            x,y = pos
-            self.tiles[y][x].intersect(val)
+    def __str__(self):
+        string = '-'*14*5 + '\n'
+        for r,row in enumerate(self.tiles):
+            for cell in row:
+                string += '{:^14}'.format(str(cell))
+            string += (' |  {}\n'.format(self.row_data[r]))
+        string += '-'*14*5 + '\n'
+        string += '{:^14}{:^14}{:^14}{:^14}{:^14}\n'.format(*[str(data) for data in self.col_data])
+        return(string)
 
     def row(self,r):
         tiles = self.tiles[r]
-        shown = sum([tile.is_shown() for tile in tiles])
-        return(Pane(tiles,shown,row_data[r]))
+        return(Pane(tiles,self.row_data[r]))
 
     def col(self,c):
         tiles = [self.tiles[r][c] for r in range(self.size)]
-        shown = sum([tile.is_shown() for tile in tiles])
-        return(Pane(tiles,shown,col_data[c]))
+        return(Pane(tiles,self.col_data[c]))
 
-    def tile(self,x,y):
-        return(self.tiles[y][x])
+    def panes(self):
+        panes = []
+        for r in range(self.size):
+            panes.append(self.row(r))
+        for c in range(self.size):
+            panes.append(self.col(c))
+        return(panes)
 
-    def __str__(self):
-        string = ''
-        for row in self.tiles:
-            for cell in row:
-                string += '{:^14}'.format(str(cell))
-            string += ('\n')
-        return(string)
+    def tile(self,r,c):
+        return(self.tiles[r][c])
+
+    def reveal_safe(self):
+        for r in range(self.size):
+            for c in range(self.size):
+                tile = self.tile(r,c)
+                if not tile.is_shown() and tile.volt_prob() == 0:
+                    self.tile(r,c).prompt(screen=self.screen)
+                    return(1)
+        return(0)
+
+    def guess(self):
+        p_dict = {}
+        for r in range(self.size):
+            for c in range(self.size):
+                tile = self.tile(r,c)
+                if not tile.is_shown():
+                    if not tile.is_garbage():
+                        tile_risk = self.row(r).volt_prob() * self.col(c).volt_prob()
+                        high = max(tile.memo)
+                        if tile_risk in p_dict:
+                            if high > p_dict[tile_risk][2]:
+                                p_dict[tile_risk] = [r,c,high]
+                        else:
+                            p_dict[tile_risk] = [r,c,high]
+        r,c,high = p_dict.pop(min(p_dict.keys()))
+        self.tile(r,c).prompt(self.screen)
+
+    def deduce(self):
+        for pane in self.panes():
+            if pane.hidden.volts == 0:
+                if pane.hidden.coin_v == pane.hidden.coin_c:
+                    pane.update({1})
+                elif pane.hidden.coin_v == pane.hidden.coin_c + 1:
+                    pane.update({1,2})
+                elif pane.hidden.coin_v >= pane.hidden.coin_c + 2:
+                    pane.update({1,2,3})
+            elif pane.hidden.count == 1:
+                pane.hidden.tiles[0].update([pane.hidden.coin_v])
+            else:
+                if pane.hidden.coin_v == pane.hidden.coin_c:
+                    pane.update({0,1})
+                elif pane.hidden.coin_v == pane.hidden.coin_c + 1:
+                    pane.update({0,1,2})
+                elif pane.hidden.coin_v >= pane.hidden.coin_c + 2:
+                    pane.update({0,1,2,3})
+            # TODO: sum of max values in pane < coin_v
+
+    def render_all(self):
+        h = 5
+        w = 10
+
+        # renders tiles
+        for r in range(self.size):
+            for c in range(self.size):
+                self.tile(r,c).render(self.screen)
+
+        # renders row data
+        for r in range(self.size):
+            coins = str(self.row_data[r][0])
+            volts = str(self.row_data[r][1])
+            self.screen.addstr(r*h+1,(w+1)*self.size,coins)
+            self.screen.addstr(r*h+3,(w+1)*self.size,volts)
+
+        # renders column data
+        for c in range(self.size):
+            coins = str(self.col_data[c][0])
+            volts = str(self.col_data[c][1])
+            self.screen.addstr(self.size*h,c*(w+1)+2,coins)
+            self.screen.addstr(self.size*h,c*(w+1)+7,volts)
 
 # ==================== Tile =================== #
-class Tile:
-    def __init__(self,memo):
+class Tile(Board):
+    def __init__(self,b,memo,r,c):
         self.memo = set(memo)
+        self.r = r
+        self.c = c
+        self.b = b
 
     def __str__(self):
         return(str(self.memo))
@@ -54,8 +131,14 @@ class Tile:
         else:
             return(False)
 
-    def coin(self):
-        if len(self.memo) == 1:
+    def is_garbage(self):
+        if self.memo == {0,1}:
+            return(True)
+        else:
+            return(False)
+
+    def coin_v(self):
+        if self.is_shown():
             return(int(list(self.memo)[0]))
         else:
             return(0)
@@ -66,32 +149,152 @@ class Tile:
         else:
             return(0)
 
-    def intersect(self,val):
-        self.memo = self.memo & set(val)
+    def volt_prob(self):
+        if 0 in self.memo:
+            return(1) # temp func, will be improved with maff
+        else:
+            return(0)
+
+    def update(self,val):
+        if not self.is_shown():
+            self.memo = self.memo & set(val)
+
+    def set(self,val):
+        self.memo = set(val)
+
+    def render(self,screen):
+        h = self.b.h
+        w = self.b.w
+        r = self.r*h
+        c = self.c*(w+1)
+        screen.addstr(r,c,'┌'+'─'*(w-2)+'┐')
+        for i in range(1,h-1):
+            screen.addstr(r+i,c,'│')
+            screen.addstr(r+i,c+w-1,'│')
+        screen.addstr(r+h-1,c,'└'+'─'*(w-2)+'┘')
+        screen.addstr(r+1,c+2,'0' if 0 in self.memo else ' ')
+        screen.addstr(r+1,c+w-3,'1' if 1 in self.memo else ' ')
+        screen.addstr(r+h-2,c+2,'2' if 2 in self.memo else ' ')
+        screen.addstr(r+h-2,c+w-3,'3' if 3 in self.memo else ' ')
+
+    def prompt(self,screen):
+        if screen is None:
+            user_input = input('Input contents of tile at ({},{}): '.format(self.r,self.c))
+            try:
+                if int(user_input) in list(self.memo):
+                    self.memo = set([int(user_input)])
+                else:
+                    raise
+            except:
+                print('Invalid input, tile contents must be one of the following integers: {}'.format(self.memo))
+                self.reveal()
+        else:
+            h = self.b.h
+            w = self.b.w
+            r = self.r*h
+            c = self.c*(w+1)
+            screen.addstr(r,c,'┌'+'─'*(w-2)+'┐',curses.A_REVERSE)
+            for i in range(1,h-1):
+                screen.addstr(r+i,c,'│',curses.A_REVERSE)
+                screen.addstr(r+i,c+w-1,'│',curses.A_REVERSE)
+            screen.addstr(r+h-1,c,'└'+'─'*(w-2)+'┘',curses.A_REVERSE)
+
+            key = screen.getch(r,c)
+
+            self.render(screen)
+
+            # # if key == curses.KEY_UP:
+            # #     return(self.r-1,self.c)
+            # # elif key == curses.KEY_DOWN:
+            # #     return((self.r+1) % self.b.size,self.c)
+            # # elif key == curses.KEY_LEFT:
+            # #     return(self.r,self.c-1)
+            # # elif key == curses.KEY_RIGHT:
+            # #     return(self.r,(self.c+1) % self.b.size)
+            # else:
+            self.set([int(chr(key))])
+            self.render(screen)
+            return([self.r,self.c])
+
 
 
 # ==================== Pane =================== #
 class Pane:
-    def __init__(self,tiles,shown,data):
+    def __init__(self,tiles,data):
         self.data = data
-        self.tiles = tiles
+
+        hidden_tiles = [tile for tile in tiles if not tile.is_shown()]
+        shown_tiles = [tile for tile in tiles if tile.is_shown()]
         total_coins = data[0]
         total_volts = data[1]
-        shown_coins = sum([tile.coin() for tile in self.tiles])
-        shown_volts = sum([tile.volt() for tile in self.tiles])
-        hidden_coins = data[0]-shown_coins
-        hidden_volts = data[1]-shown_volts
-        self.total = PaneProp(5,total_coins,total_volts)
-        self.shown = PaneProp(shown,shown_coins,shown_volts)
-        self.hidden = PaneProp(5-shown,hidden_coins,hidden_volts)
+        self.total = PaneProp(tiles,total_coins,total_volts)
+        shown_coin_v = sum([tile.coin_v() for tile in self.total.tiles])
+        shown_volts = sum([tile.volt() for tile in self.total.tiles])
+        hidden_coins = total_coins - shown_coin_v
+        hidden_volts = total_volts - shown_volts
+        self.shown = PaneProp(shown_tiles,shown_coin_v,shown_volts)
+        self.hidden = PaneProp(hidden_tiles,hidden_coins,hidden_volts)
+
+    def __str__(self):
+        return(str([tile for tile in self.tiles]))
 
     def tile(self,i):
         return(self.tiles[i])
 
+    def update(self,val):
+        for tile in self.total.tiles:
+            tile.update(val)
+
+    def volt_prob(self):
+        if self.hidden.count == 0:
+            return(0)
+        else:
+            return(self.hidden.volts/self.hidden.count)
+
 
 # =============== Pane Properties ============== #
 class PaneProp:
-    def __init__(self,count,coins,volts):
-        self.count = count
-        self.coins = coins
+    def __init__(self,tiles,coins,volts):
+        self.tiles = tiles
+        self.count = len(tiles)
+        self.coin_v = coins
+        self.coin_c = self.count - volts
         self.volts = volts
+
+
+
+# =========== Random Board Properties ========== #
+class RandBoard:
+    def __init__(self):
+        self.size = 5
+        self.tiles = []
+        for r in range(self.size):
+            self.tiles.append([])
+            for c in range(self.size):
+                self.tiles[r].append(Tile(self,{randint(0,3)},r,c))
+
+        row_data = [[0,0],[0,0],[0,0],[0,0],[0,0]]
+        col_data = [[0,0],[0,0],[0,0],[0,0],[0,0]]
+
+        for r in range(5):
+            for c in range(5):
+                if self.tiles[r][c].coin_v() == 0:
+                    row_data[r][1] += 1
+                else:
+                    row_data[r][0] += self.tiles[r][c].coin_v()
+
+                if self.tiles[c][r].coin_v() == 0:
+                    col_data[c][1] += 1
+                else:
+                    col_data[c][0] += self.tiles[r][c].coin_v()
+
+        self.row_data = row_data
+        self.col_data = col_data
+
+    def __str__(self):
+        string = ''
+        for row in self.tiles:
+            for tile in row:
+                string += '{:^14}'.format(str(tile))
+            string += ('\n')
+        return(string)
