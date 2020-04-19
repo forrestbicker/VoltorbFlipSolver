@@ -19,4 +19,7 @@ def main(screen):
 
 
 if __name__ == '__main__':
-    curses.wrapper(main)
+    try:
+        curses.wrapper(main)
+    except:
+        print("Curses Error: Terminal too small, please expand")
